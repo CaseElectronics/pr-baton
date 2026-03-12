@@ -1,0 +1,53 @@
+name: PR Assignee Baton
+description: >
+  Passes the PR "baton" between reviewer and author.
+  When review is requested, assigns the PR to the reviewer.
+  When a review is submitted, assigns the PR back to the author.
+
+inputs:
+  github-token:
+    description: GitHub token with pull-requests and issues write permissions.
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Assign PR to reviewer
+      if: github.event_name == 'pull_request'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        PR_NUMBER="${{ github.event.pull_request.number }}"
+        REPO="${{ github.repository }}"
+        REVIEWER="${{ github.event.requested_reviewer.login }}"
+
+        if [ -z "$REVIEWER" ] || [ "$REVIEWER" = "copilot" ]; then
+          echo "Invalid or multiple reviewers - skipping assignment."
+          exit 0
+        fi
+
+        echo "Assigning PR #$PR_NUMBER to reviewer $REVIEWER"
+
+        gh api \
+          --method PATCH \
+          repos/$REPO/issues/$PR_NUMBER \
+          -f assignees[]="$REVIEWER"
+
+    - name: Assign PR back to author
+      if: github.event_name == 'pull_request_review'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        PR_NUMBER="${{ github.event.pull_request.number }}"
+        REPO="${{ github.repository }}"
+        AUTHOR="${{ github.event.pull_request.user.login }}"
+
+        echo "Assigning PR #$PR_NUMBER back to author $AUTHOR"
+
+        gh api \
+          --method PATCH \
+          repos/$REPO/issues/$PR_NUMBER \
+          -f assignees[]="$AUTHOR"
