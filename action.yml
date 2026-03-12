@@ -2,6 +2,9 @@ name: PR Assignee Baton
 description: >
   Automatically sets the reviewer or author as PR
   assignee when a review is requested or submitted.
+branding:
+  icon: git-merge
+  color: blue
 
 inputs:
   github-token:
