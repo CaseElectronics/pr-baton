@@ -23,7 +23,9 @@ permissions:
   issues: write
 
 jobs:
-  assign-baton: { runs-on: ubuntu-latest, steps: [ { uses: CaseElectronics/pr-baton@v1 } ] }
+  assign-baton:
+    runs-on: ubuntu-latest
+    steps: [ { uses: CaseElectronics/pr-baton@v1 } ]
 ```
 
 ## Inputs
