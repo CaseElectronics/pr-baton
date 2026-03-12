@@ -15,22 +15,15 @@ Create a workflow file in your repository (e.g. `.github/workflows/pr-baton.yml`
 name: PR Assignee Baton
 
 on:
-  pull_request:
-    types:
-      - review_requested
-  pull_request_review:
-    types:
-      - submitted
+  pull_request: { types: [ review_requested ] }
+  pull_request_review: { types: [ submitted ] }
 
 permissions:
   pull-requests: write
   issues: write
 
 jobs:
-  assign-baton:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: CaseElectronics/pr-baton@v1
+  assign-baton: { runs-on: ubuntu-latest, steps: [ { uses: CaseElectronics/pr-baton@v1 } ] }
 ```
 
 ## Inputs
