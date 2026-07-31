@@ -8,6 +8,9 @@ on:
   pull_request:
     types:
       - review_requested
+      - opened
+      - converted_to_draft
+      - ready_for_review
   pull_request_review:
     types:
       - submitted
@@ -22,16 +25,20 @@ jobs:
 
     steps:
       - name: Assign PR to reviewer
-        if: github.event_name == 'pull_request'
+        if: >-
+          github.event.action == 'review_requested' ||
+          github.event.action == 'ready_for_review'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
           REPO="${{ github.repository }}"
-          REVIEWER="${{ github.event.requested_reviewer.login }}"
+          # On review_requested the reviewer is on the event; on ready_for_review
+          # we fall back to whoever is already requested on the PR.
+          REVIEWER="${{ github.event.requested_reviewer.login || github.event.pull_request.requested_reviewers[0].login }}"
 
           if [ -z "$REVIEWER" ] || [ "$REVIEWER" = "copilot" ]; then
-            echo "Invalid or multiple reviewers - skipping assignment."
+            echo "No individual reviewer to assign - skipping assignment."
             exit 0
           fi
 
@@ -42,8 +49,11 @@ jobs:
             repos/$REPO/issues/$PR_NUMBER \
             -f assignees[]="$REVIEWER"
 
-      - name: Assign PR back to author
-        if: github.event_name == 'pull_request_review'
+      - name: Assign PR to author
+        if: >-
+          github.event_name == 'pull_request_review' ||
+          github.event.action == 'converted_to_draft' ||
+          (github.event.action == 'opened' && github.event.pull_request.draft)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -51,7 +61,14 @@ jobs:
           REPO="${{ github.repository }}"
           AUTHOR="${{ github.event.pull_request.user.login }}"
 
-          echo "Assigning PR #$PR_NUMBER back to author $AUTHOR"
+          case "$AUTHOR" in
+            *"[bot]")
+              echo "Author $AUTHOR is a bot and cannot be assigned - skipping."
+              exit 0
+              ;;
+          esac
+
+          echo "Assigning PR #$PR_NUMBER to author $AUTHOR"
 
           gh api \
             --method PATCH \
