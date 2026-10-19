@@ -1,7 +1,8 @@
 name: PR Assignee Baton
 description: >
   Automatically sets the reviewer or author as PR assignee
-  when a review is requested or submitted, or a PR is drafted.
+  when a review is requested or submitted, a PR is drafted,
+  or CI fails or the PR has a merge conflict.
 branding:
   icon: git-merge
   color: blue
@@ -15,7 +16,39 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Find PR for failed CI result
+      id: ci
+      if: >-
+        (github.event_name == 'workflow_run' &&
+          contains(fromJSON('["failure", "timed_out", "startup_failure"]'), github.event.workflow_run.conclusion)) ||
+        (github.event_name == 'check_suite' &&
+          contains(fromJSON('["failure", "timed_out"]'), github.event.check_suite.conclusion)) ||
+        (github.event_name == 'status' &&
+          contains(fromJSON('["failure", "error"]'), github.event.state))
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        REPO="${{ github.repository }}"
+        SHA="${{ github.event.workflow_run.head_sha || github.event.check_suite.head_sha || github.event.sha }}"
+
+        # Only results for a PR's current head count; a result for a commit that
+        # has since been pushed over is stale.
+        PR=$(gh api repos/$REPO/commits/$SHA/pulls \
+          --jq "[.[] | select(.state == \"open\" and .head.sha == \"$SHA\")][0] // empty | \"\(.number) \(.user.login)\"")
+
+        if [ -z "$PR" ]; then
+          echo "No open PR has $SHA as its head - skipping."
+          exit 0
+        fi
+
+        read -r PR_NUMBER AUTHOR <<< "$PR"
+        echo "CI failed on PR #$PR_NUMBER"
+        echo "pr-number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+        echo "author=$AUTHOR" >> "$GITHUB_OUTPUT"
+
     - name: Assign PR to reviewer
+      id: reviewer
       if: >-
         github.event.action == 'review_requested' ||
         github.event.action == 'ready_for_review'
@@ -34,6 +67,49 @@ runs:
           exit 0
         fi
 
+        # Mergeability is computed lazily, so it can read UNKNOWN for a few
+        # seconds. In-progress checks (including this run) are ignored; only a
+        # completed failure counts.
+        for _ in 1 2 3 4 5; do
+          STATE=$(gh api graphql \
+            -F owner="${REPO%/*}" -F repo="${REPO#*/}" -F number="$PR_NUMBER" \
+            -f query='
+              query($owner: String!, $repo: String!, $number: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $number) {
+                    mergeable
+                    commits(last: 1) {
+                      nodes {
+                        commit {
+                          statusCheckRollup {
+                            contexts(first: 100) {
+                              nodes {
+                                ... on CheckRun { conclusion }
+                                ... on StatusContext { state }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }' \
+            --jq '.data.repository.pullRequest | "\(.mergeable) \([.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[]? | .conclusion // .state] | any(. == "FAILURE" or . == "ERROR" or . == "TIMED_OUT" or . == "STARTUP_FAILURE"))"')
+          case "$STATE" in
+            UNKNOWN*) sleep 3 ;;
+            *) break ;;
+          esac
+        done
+
+        read -r MERGEABLE CHECKS_FAILED <<< "$STATE"
+
+        if [ "$MERGEABLE" = "CONFLICTING" ] || [ "$CHECKS_FAILED" = "true" ]; then
+          echo "PR #$PR_NUMBER has a merge conflict or failing checks - handing it back to the author."
+          echo "blocked=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
         echo "Assigning PR #$PR_NUMBER to reviewer $REVIEWER"
 
         gh api \
@@ -45,14 +121,18 @@ runs:
       if: >-
         github.event_name == 'pull_request_review' ||
         github.event.action == 'converted_to_draft' ||
-        (github.event.action == 'opened' && github.event.pull_request.draft)
+        (github.event.action == 'opened' && github.event.pull_request.draft) ||
+        steps.reviewer.outputs.blocked == 'true' ||
+        steps.ci.outputs.pr-number != ''
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
       run: |
-        PR_NUMBER="${{ github.event.pull_request.number }}"
+        # On CI events there is no pull_request in the payload, so the PR comes
+        # from the CI step instead.
+        PR_NUMBER="${{ steps.ci.outputs.pr-number || github.event.pull_request.number }}"
         REPO="${{ github.repository }}"
-        AUTHOR="${{ github.event.pull_request.user.login }}"
+        AUTHOR="${{ steps.ci.outputs.author || github.event.pull_request.user.login }}"
 
         case "$AUTHOR" in
           *"[bot]")
